@@ -12,6 +12,7 @@ import io
 import json
 import mimetypes
 import os
+import posixpath
 import re
 import shutil
 import subprocess
@@ -35,7 +36,7 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 REFS_NAME = "timeline-refs.json"
 REMOVED_NAME = "timeline-refs.removed.json"   # 종료 때 정리된 항목의 보관 파일(복구용)
 FIRST_PORT = 8765
-APP_VERSION = "1.0.1 (2026-11-20)"
+APP_VERSION = "1.1.0 (2026-11-20)"
 
 # 새 버전 알림용 GitHub 저장소 ("소유자/저장소"). 배포하는 사람이 여기에 적습니다. 비워 두면 알림 기능이 꺼집니다.
 # config.json의 "update_repo"로도 지정할 수 있습니다(그쪽이 우선).
@@ -1233,6 +1234,387 @@ def add_video_sheet(root, rel, sheet_name, title, url, date_text, duration):
     return {"ok": True, "key": "%s::%s" % (rel, name), "base": used}
 
 
+# ------------------------------------------------------------------ 영상(시트) 삭제 · 이름 변경 · 위치 이동
+def _xml_unesc(t):
+    return t.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&apos;", "'").replace("&amp;", "&")
+
+
+def _attr_esc(t):
+    return _xml_esc(t).replace('"', "&quot;")
+
+
+def _sheet_tags(wbxml):
+    """workbook.xml의 <sheet .../> 태그들: [(match, 시트이름, 시트 순번)]"""
+    out = []
+    for m in re.finditer(r"<sheet\b[^>]*?/>", wbxml):
+        nm = re.search(r'\bname="([^"]*)"', m.group(0))
+        out.append((m, _xml_unesc(nm.group(1)) if nm else ""))
+    return out
+
+
+def _tag_attr(tag, attr):
+    m = re.search(r'\b%s="([^"]*)"' % re.escape(attr), tag)
+    return m.group(1) if m else None
+
+
+def _refs_sheet_name(xml, name):
+    """시트 XML 안의 수식이 name 시트를 가리키는지 (이름을 바꾸면 깨지는 경우를 막기 위함)"""
+    for f in re.findall(r"<f\b[^>]*>(.*?)</f>", xml, re.S):
+        t = _xml_unesc(f)
+        if (name + "!") in t or ("'" + name.replace("'", "''") + "'!") in t:
+            return True
+    return False
+
+
+def _remove_sheet_file(src, dst, name):
+    """엑셀 파일에서 시트 하나를 뺀 새 파일을 dst에 만듭니다 (이 시트에만 딸린 부품과 계산 체인도 정리)."""
+    with zipfile.ZipFile(src) as zin:
+        wbxml = zin.read("xl/workbook.xml").decode("utf-8-sig")
+        relxml = zin.read("xl/_rels/workbook.xml.rels").decode("utf-8-sig")
+        ctxml = zin.read("[Content_Types].xml").decode("utf-8-sig")
+        tags = _sheet_tags(wbxml)
+        idx = next((i for i, (_, n) in enumerate(tags) if n == name), None)
+        if idx is None:
+            raise SaveError(404, "시트 '%s'를 찾을 수 없습니다" % name)
+        if not any(i != idx and (_tag_attr(m.group(0), "state") or "visible") == "visible" for i, (m, _) in enumerate(tags)):
+            raise SaveError(409, "이 문서의 마지막 시트라서 삭제할 수 없습니다. 엑셀 문서에는 시트가 하나 이상 있어야 합니다. (다른 영상을 먼저 추가하거나, 필요 없는 문서는 파일째 정리해 주세요.)")
+        tag = tags[idx][0].group(0)
+        rid = None
+        m = re.search(r'\b\w+:id="([^"]*)"', tag)
+        if m:
+            rid = m.group(1)
+        part = _sheet_part(zin, name)
+        remove, repl = {part}, {}
+        # 이 시트에서만 쓰는 부품(그림·메모 등)도 함께 뺍니다
+        srel = posixpath.join(posixpath.dirname(part), "_rels", part.rsplit("/", 1)[1] + ".rels")
+        if srel in zin.namelist():
+            remove.add(srel)
+            others = set()
+            for n in zin.namelist():
+                if n.endswith(".rels") and n != srel:
+                    base = posixpath.dirname(posixpath.dirname(n))
+                    for rm in re.finditer(r"<Relationship\b[^>]*/>", zin.read(n).decode("utf-8-sig", "ignore")):
+                        t, mode = _tag_attr(rm.group(0), "Target"), _tag_attr(rm.group(0), "TargetMode")
+                        if t and mode != "External":
+                            others.add(t.lstrip("/") if t.startswith("/") else posixpath.normpath(posixpath.join(base, t)))
+            for tm in re.finditer(r"<Relationship\b[^>]*/>", zin.read(srel).decode("utf-8-sig", "ignore")):
+                t, mode = _tag_attr(tm.group(0), "Target"), _tag_attr(tm.group(0), "TargetMode")
+                if not t or mode == "External":
+                    continue
+                full = posixpath.normpath(posixpath.join(posixpath.dirname(part), t)) if not t.startswith("/") else t.lstrip("/")
+                if full in zin.namelist() and full not in others:
+                    remove.add(full)
+                    sub = posixpath.join(posixpath.dirname(full), "_rels", full.rsplit("/", 1)[1] + ".rels")
+                    if sub in zin.namelist():
+                        remove.add(sub)
+        # 계산 체인은 엑셀이 다시 만들므로 함께 뺍니다 (지운 시트를 가리키면 복구 창이 뜰 수 있음)
+        if "xl/calcChain.xml" in zin.namelist():
+            remove.add("xl/calcChain.xml")
+            relxml = re.sub(r"<Relationship\b[^>]*?calcChain[^>]*/>", "", relxml)
+        # workbook.xml: 시트 태그, 이름 범위, 열린 탭 번호 정리
+        t0 = tags[idx][0]
+        wbxml = wbxml[:t0.start()] + wbxml[t0.end():]
+        left = len(tags) - 1
+
+        def dn(m):
+            body = m.group(0)
+            ls = _tag_attr(body.split(">", 1)[0], "localSheetId")
+            if ls is not None and ls.isdigit():
+                n = int(ls)
+                if n == idx:
+                    return ""
+                if n > idx:
+                    body = re.sub(r'localSheetId="\d+"', 'localSheetId="%d"' % (n - 1), body, 1)
+            if (name + "!") in _xml_unesc(body) or ("'" + name + "'!") in _xml_unesc(body):
+                return ""
+            return body
+        wbxml = re.sub(r"<definedName\b[^>]*>.*?</definedName>", dn, wbxml, flags=re.S)
+        wbxml = re.sub(r"<definedNames>\s*</definedNames>", "", wbxml)
+
+        def wv(m):
+            s = m.group(0)
+            for a in ("activeTab", "firstSheet"):
+                v = _tag_attr(s, a)
+                if v is not None and v.isdigit():
+                    n = int(v)
+                    n = 0 if (n == idx or n >= left) else (n - 1 if n > idx else n)
+                    s = re.sub(r'\b%s="\d+"' % a, '%s="%d"' % (a, n), s, 1)
+            return s
+        wbxml = re.sub(r"<workbookView\b[^>]*/?>", wv, wbxml)
+        if rid:
+            relxml = re.sub(r"<Relationship\b[^>]*?\bId=\"%s\"[^>]*/>" % re.escape(rid), "", relxml)
+        for p in remove:
+            ctxml = re.sub(r"<Override\b[^>]*?\bPartName=\"/%s\"[^>]*/>" % re.escape(p), "", ctxml)
+        repl = {"xl/workbook.xml": wbxml, "xl/_rels/workbook.xml.rels": relxml, "[Content_Types].xml": ctxml}
+        with zipfile.ZipFile(dst, "w") as zout:
+            for info in zin.infolist():
+                if info.filename in remove:
+                    continue
+                data = zin.read(info.filename)
+                if info.filename in repl:
+                    data = repl[info.filename].encode("utf-8")
+                zout.writestr(info, data, compress_type=info.compress_type)
+
+
+def _same_other_sheets(before, after, gone=None, renamed=None):
+    """저장 전후 비교: 지정한 시트 외에는 이름·내용이 그대로여야 합니다."""
+    b = [(n, c) for n, c, _ in before if n != gone]
+    if renamed:
+        b = [(renamed[1] if n == renamed[0] else n, c) for n, c in b]
+    a = [(n, c) for n, c, _ in after]
+    return [n for n, _ in a] == [n for n, _ in b] and all(x[1] == y[1] for x, y in zip(a, b))
+
+
+def delete_video_sheet(root, rel, sheet):
+    """엑셀 문서에서 영상 시트 하나를 삭제합니다 (삭제 전 파일 전체를 .backup에 보관)."""
+    path = _safe_xlsx(root, rel)
+    if is_template_sheet(sheet):
+        raise SaveError(400, "템플릿 시트는 여기서 삭제할 수 없습니다")
+    try:
+        before = list(read_xlsx_robust(path))
+    except PermissionError:
+        raise SaveError(423, "엑셀 파일을 읽을 수 없습니다. 엑셀을 저장하고 닫은 뒤 다시 시도해 주세요.")
+    found = next(((c, l) for n, c, l in before if n == sheet), None)
+    if not found:
+        raise SaveError(404, "시트 '%s'를 찾을 수 없습니다. 목록을 새로 고친 뒤 다시 시도해 주세요." % sheet)
+    v = parse_sheet(rel, sheet, found[0], found[1])
+    n_entries = len([e for e in (v or {}).get("entries", []) if not e.get("bad")])
+    tmp = os.path.join(os.path.dirname(path), ".tlm-%d.tmp" % os.getpid())
+    try:
+        _remove_sheet_file(path, tmp, sheet)
+        after = list(read_xlsx(tmp))
+        if not _same_other_sheets(before, after, gone=sheet):
+            raise SaveError(500, "저장 결과 검증에 실패해 원본을 그대로 두었습니다")
+        backup_file(root, path)
+        os.replace(tmp, path)
+    except PermissionError:
+        raise SaveError(423, "엑셀에서 이 파일이 열려 있어 저장할 수 없습니다. 엑셀에서 저장하고 닫은 뒤 다시 시도해 주세요.")
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return {"ok": True, "entries": n_entries, "title": (v or {}).get("title", sheet)}
+
+
+def _rename_sheet_file(src, dst, old, new, title):
+    with zipfile.ZipFile(src) as zin:
+        wbxml = zin.read("xl/workbook.xml").decode("utf-8-sig")
+        part = _sheet_part(zin, old)
+        repl = {}
+        if new != old:
+            tags = _sheet_tags(wbxml)
+            hit = next((m for m, n in tags if n == old), None)
+            if hit is None:
+                raise SaveError(404, "시트 '%s'를 찾을 수 없습니다" % old)
+            for n in zin.namelist():                      # 다른 시트의 수식이 이 이름을 쓰면 깨지므로 막습니다
+                if re.fullmatch(r"xl/worksheets/[^/]+\.xml", n) and _refs_sheet_name(zin.read(n).decode("utf-8-sig", "ignore"), old):
+                    raise SaveError(409, "다른 시트의 수식이 이 시트 이름을 쓰고 있어 이름을 바꿀 수 없습니다")
+            newtag = re.sub(r'\bname="[^"]*"', lambda _m: 'name="%s"' % _attr_esc(new), hit.group(0), 1)
+            wbxml = wbxml[:hit.start()] + newtag + wbxml[hit.end():]
+
+            def dn(m):
+                body = m.group(0)
+                t = _xml_unesc(body)
+                if (old + "!") in t or ("'" + old.replace("'", "''") + "'!") in t:
+                    body = body.replace(_xml_esc(old) + "!", _xml_esc(new) + "!").replace("&apos;" + _xml_esc(old) + "&apos;!", "&apos;" + _xml_esc(new) + "&apos;!").replace("'" + _xml_esc(old) + "'!", "'" + _xml_esc(new) + "'!")
+                return body
+            wbxml = re.sub(r"<definedName\b[^>]*>.*?</definedName>", dn, wbxml, flags=re.S)
+            repl["xl/workbook.xml"] = wbxml
+        if title is not None:
+            repl[part] = set_cell_inline(zin.read(part).decode("utf-8-sig"), "B1", title)
+        with zipfile.ZipFile(dst, "w") as zout:
+            for info in zin.infolist():
+                data = zin.read(info.filename)
+                if info.filename in repl:
+                    data = repl[info.filename].encode("utf-8")
+                zout.writestr(info, data, compress_type=info.compress_type)
+
+
+def rename_video_sheet(root, rel, sheet, new_name, new_title):
+    """영상 시트의 이름(엑셀 탭 이름)과 제목(B1)을 바꿉니다. 바꾸지 않을 항목은 같은 값을 보내면 됩니다."""
+    path = _safe_xlsx(root, rel)
+    new_name = clean_sheet_name(new_name)
+    title = (new_title or "").strip()
+    if not title:
+        raise SaveError(400, "영상 제목을 입력해 주세요")
+    if len(title) > 300:
+        raise SaveError(400, "영상 제목이 너무 깁니다")
+    if is_template_sheet(new_name):
+        raise SaveError(400, "'템플릿' 이름은 목록에서 제외되는 템플릿 시트 이름이라 영상 이름으로 쓸 수 없습니다")
+    try:
+        before = list(read_xlsx_robust(path))
+    except PermissionError:
+        raise SaveError(423, "엑셀 파일을 읽을 수 없습니다. 엑셀을 저장하고 닫은 뒤 다시 시도해 주세요.")
+    found = next(((c, l) for n, c, l in before if n == sheet), None)
+    if not found:
+        raise SaveError(404, "시트 '%s'를 찾을 수 없습니다. 목록을 새로 고친 뒤 다시 시도해 주세요." % sheet)
+    old_v = parse_sheet(rel, sheet, found[0], found[1])
+    if new_name != sheet and any(n.lower() == new_name.lower() for n, _, _ in before if n != sheet):
+        raise SaveError(409, "같은 이름의 시트가 이미 있습니다")
+    same_title = bool(old_v) and old_v["title"] == title
+    if new_name == sheet and same_title:
+        raise SaveError(400, "바뀐 내용이 없습니다")
+    tmp = os.path.join(os.path.dirname(path), ".tlm-%d.tmp" % os.getpid())
+    try:
+        _rename_sheet_file(path, tmp, sheet, new_name, None if same_title else title)
+        after = list(read_xlsx(tmp))
+        if not _same_other_sheets([(n, c if n != sheet else {k: x for k, x in c.items() if k != "B1"}, l) for n, c, l in before],
+                                  [(n, c if n != new_name else {k: x for k, x in c.items() if k != "B1"}, l) for n, c, l in after],
+                                  renamed=(sheet, new_name)):
+            raise SaveError(500, "저장 결과 검증에 실패해 원본을 그대로 두었습니다")
+        got = next(((c, l) for n, c, l in after if n == new_name), None)
+        nv = got and parse_sheet(rel, new_name, got[0], got[1])
+        if not nv or nv["title"] != title or len(nv["entries"]) != len((old_v or {}).get("entries", [])):
+            raise SaveError(500, "저장 결과 검증에 실패해 원본을 그대로 두었습니다")
+        backup_file(root, path)
+        os.replace(tmp, path)
+    except PermissionError:
+        raise SaveError(423, "엑셀에서 이 파일이 열려 있어 저장할 수 없습니다. 엑셀에서 저장하고 닫은 뒤 다시 시도해 주세요.")
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return {"ok": True, "key": "%s::%s" % (rel, new_name), "name": new_name, "title": title}
+
+
+def _unique_sheet_name(name, taken):
+    low = {t.lower() for t in taken}
+    if name.lower() not in low:
+        return name
+    for i in range(2, 100):
+        suf = " (%d)" % i
+        cand = name[:31 - len(suf)].rstrip() + suf
+        if cand.lower() not in low:
+            return cand
+    raise SaveError(409, "대상 문서에서 쓸 수 있는 시트 이름을 찾지 못했습니다")
+
+
+def _norm_entry_text(t):
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", str(t).replace("\r\n", "\n").replace("\r", "\n")).strip()[:5000]
+
+
+def move_video_sheet(root, rel, sheet, dest_rel):
+    """영상 시트를 다른 엑셀 문서로 옮깁니다. (제목·주소·업로드일·재생 시간·타임라인 시간/내용/키워드를 새 시트로 복사하고,
+    검증이 끝난 뒤에만 원래 문서에서 지웁니다. 중간에 실패하면 대상 문서를 원래대로 되돌립니다.)"""
+    src = _safe_xlsx(root, rel)
+    dst = _safe_xlsx(root, dest_rel)
+    if os.path.normcase(src) == os.path.normcase(dst):
+        raise SaveError(400, "같은 엑셀 문서입니다. 다른 문서를 골라 주세요")
+    if is_template_sheet(sheet):
+        raise SaveError(400, "템플릿 시트는 옮길 수 없습니다")
+    try:
+        sheets = list(read_xlsx_robust(src))
+        dsheets = list(read_xlsx_robust(dst))
+    except PermissionError:
+        raise SaveError(423, "엑셀 파일을 읽을 수 없습니다. 엑셀을 저장하고 닫은 뒤 다시 시도해 주세요.")
+    found = next(((c, l) for n, c, l in sheets if n == sheet), None)
+    if not found:
+        raise SaveError(404, "시트 '%s'를 찾을 수 없습니다. 목록을 새로 고친 뒤 다시 시도해 주세요." % sheet)
+    v = parse_sheet(rel, sheet, found[0], found[1])
+    if not v:
+        raise SaveError(404, "영상 시트로 읽을 수 없는 시트입니다")
+    bad = [e for e in v["entries"] if e.get("bad")]
+    if bad:
+        raise SaveError(409, "시간 형식을 읽을 수 없는 행이 %d개 있어 옮길 수 없습니다 (내용이 사라지지 않도록 막았습니다). [진단]에서 먼저 고쳐 주세요." % len(bad))
+    entries = [e for e in v["entries"] if not e.get("bad")]
+    name = _unique_sheet_name(sheet, [n for n, _, _ in dsheets])
+    dur = v.get("duration")
+    dur_text = _fmt_dur(dur) if dur and 0 < dur <= 100 * 3600 else None
+    with open(dst, "rb") as f:
+        orig = f.read()
+    try:
+        args = (root, dest_rel, name, v["title"], v["url"])
+        try:
+            add_video_sheet(*args, v.get("dateText") or "", dur_text)
+        except SaveError as ex:
+            if "일자" not in ex.msg:
+                raise
+            add_video_sheet(*args, "", dur_text)           # 날짜 형식을 못 읽으면 날짜 없이 옮깁니다
+        for e in entries:                                  # 이미 시간 순서이며, 같은 초는 원래 순서를 지킵니다
+            add_entry(root, dest_rel, name, _fmt_time(e["sec"], ""), e["text"], e["keywords"], backup=False)
+        after = list(read_xlsx_robust(dst))
+        got = next(((c, l) for n, c, l in after if n == name), None)
+        nv = got and parse_sheet(dest_rel, name, got[0], got[1])
+        want = [(e["sec"], _norm_entry_text(e["text"]), clean_keywords(e["keywords"])) for e in entries]
+        have = [(e["sec"], e["text"], clean_keywords(e["keywords"])) for e in (nv or {}).get("entries", []) if not e.get("bad")]
+        if not nv or want != have or nv["title"] != v["title"] or nv["url"] != v["url"]:
+            raise SaveError(500, "옮긴 결과 검증에 실패해 원래대로 되돌렸습니다")
+        delete_video_sheet(root, rel, sheet)               # 여기서 실패하면 아래에서 대상 문서도 되돌립니다
+    except BaseException:
+        try:
+            with open(dst, "rb") as f:
+                changed = f.read() != orig
+            if changed:                                    # 대상 문서가 바뀌었다면 원래 내용으로 되돌립니다
+                tmp = dst + ".tlm-restore"
+                with open(tmp, "wb") as f:
+                    f.write(orig)
+                os.replace(tmp, dst)
+        except OSError:
+            pass
+        raise
+    return {"ok": True, "key": "%s::%s" % (dest_rel, name), "name": name, "renamed": name != sheet, "entries": len(entries)}
+
+
+def _save_refs_edit(root, fn):
+    """timeline-refs.json을 읽어 fn(refs)->(바뀜 여부, removed)로 고친 뒤 저장합니다."""
+    refs = load_refs(root)
+    changed, removed = fn(refs)
+    if changed:
+        save_refs(root, strip_refs(refs))
+        if removed:
+            try:
+                archive_removed(root, removed)
+            except OSError:
+                pass
+    return changed
+
+
+def remap_video_refs(root, old_key, new_key, new_title=None):
+    """영상 키(문서::시트)가 바뀔 때 참고자료·즐겨찾기·아이콘 연결을 새 키로 옮깁니다."""
+    def fn(refs):
+        ch = False
+        vids = refs.get("videos") or {}
+        if old_key != new_key and old_key in vids:
+            vids[new_key] = vids.pop(old_key)
+            ch = True
+        bm = refs.get("bookmarks") or {}
+        for b in bm.get("items", []):
+            if b.get("v") == old_key:
+                b["v"] = new_key
+                if new_title:
+                    b["title"] = new_title[:200]
+                ch = True
+        ic = refs.get("icons") or {}
+        if old_key != new_key and ("video:" + old_key) in ic:
+            ic["video:" + new_key] = ic.pop("video:" + old_key)
+            ch = True
+        return ch, None
+    return _save_refs_edit(root, fn)
+
+
+def drop_video_refs(root, key):
+    """삭제한 영상에 걸려 있던 참고자료·즐겨찾기·아이콘 연결을 정리합니다 (정리한 내용은 timeline-refs.removed.json에 보관)."""
+    def fn(refs):
+        removed = {}
+        vids = refs.get("videos") or {}
+        if key in vids:
+            removed["videos"] = {key: vids.pop(key)}
+        bm = refs.get("bookmarks") or {}
+        keep = [b for b in bm.get("items", []) if b.get("v") != key]
+        if len(keep) != len(bm.get("items", [])):
+            removed["bookmarks"] = [b for b in bm["items"] if b.get("v") == key]
+            bm["items"] = keep
+        ic = refs.get("icons") or {}
+        if ("video:" + key) in ic:
+            removed["icons"] = {"video:" + key: ic.pop("video:" + key)}
+        return bool(removed), removed
+    return _save_refs_edit(root, fn)
+
+
 def yt_oembed(url):
     """공식 oEmbed로 영상 제목을 가져옵니다 (키 불필요). 재생 시간은 제공되지 않습니다."""
     url = (url or "").strip()
@@ -1847,6 +2229,39 @@ class Handler(BaseHTTPRequestHandler):
                                         str(body.get("url", "")), str(body.get("date", "")), body.get("duration"))
                 except SaveError as ex:
                     return self._err(ex.code, ex.msg)
+                return self._json(r)
+            if u == "/api/video/delete":
+                try:
+                    f, sh = str(body.get("file", "")), str(body.get("sheet", ""))
+                    r = delete_video_sheet(root, f, sh)
+                except SaveError as ex:
+                    return self._err(ex.code, ex.msg)
+                try:
+                    drop_video_refs(root, "%s::%s" % (f, sh))
+                except Exception:
+                    r["refsWarning"] = True            # 엑셀은 지워졌고, 연결 정보 정리는 다음 정리 때 이어집니다
+                return self._json(r)
+            if u == "/api/video/rename":
+                try:
+                    f, sh = str(body.get("file", "")), str(body.get("sheet", ""))
+                    r = rename_video_sheet(root, f, sh, str(body.get("name", "")), str(body.get("title", "")))
+                except SaveError as ex:
+                    return self._err(ex.code, ex.msg)
+                try:
+                    remap_video_refs(root, "%s::%s" % (f, sh), r["key"], r["title"])
+                except Exception:
+                    r["refsWarning"] = True
+                return self._json(r)
+            if u == "/api/video/move":
+                try:
+                    f, sh = str(body.get("file", "")), str(body.get("sheet", ""))
+                    r = move_video_sheet(root, f, sh, str(body.get("dest", "")))
+                except SaveError as ex:
+                    return self._err(ex.code, ex.msg)
+                try:
+                    remap_video_refs(root, "%s::%s" % (f, sh), r["key"])
+                except Exception:
+                    r["refsWarning"] = True
                 return self._json(r)
             if u == "/api/doc/create":
                 try:

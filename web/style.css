@@ -562,3 +562,29 @@ dialog{background:var(--panel);color:var(--text)}
 .improw.st-conf .imps{color:var(--warn)}
 .improw.st-new .imps{color:var(--accent-strong)}
 .sbroot{display:flex;flex-wrap:wrap;gap:6px}
+
+/* v1.1.0 영상(시트) 메뉴: 이름 변경 · 위치 이동 · 삭제 */
+.vi .vmore{flex:none;width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--ink2);font-size:17px;line-height:1;padding:0;cursor:pointer;opacity:.5}
+.vi:hover .vmore,.vi.on .vmore,.vi .vmore:focus-visible,.vi .vmore.open{opacity:1}
+.vi .vmore:hover,.vi .vmore.open{background:var(--chipbg)}
+.vmenu{position:fixed;z-index:60;min-width:150px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 30px var(--shadow);padding:4px;display:flex;flex-direction:column}
+.vmenu button{border:0;background:none;color:inherit;font:inherit;text-align:left;padding:7px 10px;border-radius:7px;cursor:pointer;white-space:nowrap}
+.vmenu button:hover,.vmenu button:focus-visible{background:var(--accent-soft);outline:0}
+.vmenu button.danger{color:var(--warn)}
+.vmenu button.danger:hover,.vmenu button.danger:focus-visible{background:var(--warnbg)}
+#vmdlg .bmform{padding:16px;display:flex;flex-direction:column;gap:8px}
+#vmdlg label{display:flex;flex-direction:column;gap:3px;font-size:13px}
+#vmdlg label .hint{font-size:11.5px;color:var(--sub)}
+#vmdlg input{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px}
+#vmdlg h3{margin:0 0 4px}
+#vmdlg,#vmpick{--text:var(--ntext);--ink:var(--ntext);--sub:var(--nsub);--sub2:var(--nsub2);--ink2:var(--nink2);color:var(--ntext)}
+#vmpick{width:min(560px,94vw)}
+#vmpick .bmtree{max-height:300px}
+#vmpick .bmf.dis{opacity:.45;cursor:default}
+#vmpick .bmf.dis:hover{background:none}
+#vmpick .bmbtns .edmsg{flex:1;min-width:0}
+#dlgOk.danger{background:var(--warn);border-color:var(--warn);color:var(--on-warn)}
+#dlgOk.danger:hover{background:var(--warn);filter:brightness(.92)}
+:root[data-theme="dark"] .vi .vmore{color:var(--accent-lt);opacity:.8}
+:root[data-theme="dark"] .vi:hover .vmore,:root[data-theme="dark"] .vi.on .vmore,:root[data-theme="dark"] .vi .vmore.open{opacity:1}
+:root[data-theme="dark"] .vmenu{box-shadow:0 10px 30px rgba(0,0,0,.6)}

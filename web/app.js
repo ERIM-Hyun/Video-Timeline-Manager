@@ -1,7 +1,7 @@
 'use strict';
 /* 영상 타임라인 매니저 - 화면 로직 (서버 app.py 의 /api/* 와 통신) */
 
-const WEB_VERSION = '1.0.1 (2026-11-20)';   // 화면(웹 파일) 버전 — app.py의 APP_VERSION과 같아야 합니다
+const WEB_VERSION = '1.1.0 (2026-11-20)';   // 화면(웹 파일) 버전 — app.py의 APP_VERSION과 같아야 합니다
 const S = {
   lib: null, videos: [], errors: [], refs: { version: 1, videos: {} },
   selKey: null, selEntry: null, query: '', vq: '', zoom: null, only: false, onlyHit: true, scope: { text: true, kw: true, ref: true },
@@ -89,12 +89,12 @@ const embedUrl = (id, sec, auto) => `https://www.youtube.com/embed/${encodeURICo
 const PLACE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.4 11.1l-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>';
 
 /* 간단한 대화상자: input 이 있으면 문자열(취소 시 null), 없으면 true/false */
-function ask({ title, msg = '', value = null, ok = '확인' }) {
+function ask({ title, msg = '', value = null, ok = '확인', danger = false }) {
   return new Promise(res => {
     const d = $('#dlg'), inp = $('#dlgI');
     $('#dlgT').textContent = title; $('#dlgM').textContent = msg;
     inp.style.display = value === null ? 'none' : ''; inp.value = value ?? '';
-    $('#dlgOk').textContent = ok;
+    $('#dlgOk').textContent = ok; $('#dlgOk').classList.toggle('danger', !!danger);
     const cancelVal = value === null ? false : null;
     const done = v => { d.close(); res(v); };
     $('#dlgOk').onclick = () => done(value === null ? true : (inp.value.trim() || value));
@@ -363,7 +363,7 @@ function vItem(v, showWb) {
   const badge = q && h?.n ? `<span class="hc" title="${h.n}개 타임스탬프에서 단어 ${h.occ}회 일치">${h.n}</span>` : '';
   return `<div class="vi ${v.key === S.selKey ? 'on' : ''} ${q && !h?.n ? 'nohit' : ''}" data-key="${esc(v.key)}">${th}<div class="vtx">
     <div class="vd">${esc(v.dateText || '날짜 없음')}</div><div class="vt">${esc(v.title)}</div>
-    ${showWb ? `<div class="vw">${esc(v.wb)}</div>` : ''}</div>${badge}</div>`;
+    ${showWb ? `<div class="vw">${esc(v.wb)}</div>` : ''}</div>${badge}<button type="button" class="vmore" data-vm="${esc(v.key)}" title="영상 메뉴 (이름 변경 · 위치 이동 · 삭제)" aria-label="영상 메뉴" aria-haspopup="menu">⋯</button></div>`;
 }
 /* 폴더·엑셀 파일 아이콘(이모지) — 아이콘을 누르면 바꿀 수 있습니다 */
 const ICON_DEFAULT = { dir: '📁', file: '📒', video: '▶' };
@@ -409,6 +409,7 @@ function openIconPicker(kind, path) {
   dlg.showModal(); inp.focus(); inp.select();
 }
 function renderSide() {
+  closeVMenu();
   const q = terms().length;
   const list = (q && S.onlyHit) ? S.videos.filter(v => S.hits[v.key]?.n > 0) : S.videos;
   let html = '';
@@ -1365,8 +1366,164 @@ function bmSection() {
   return `<div class="bsh">★ 즐겨찾기 ${ms.length}개</div>${rows}${ms.length > 40 ? `<div class="hint" style="padding:4px 8px">…외 ${ms.length - 40}개 (관리창에서 검색)</div>` : ''}<div class="bsh">🎞 영상</div>`;
 }
 
+/* ---------- 영상(시트) 메뉴: 이름 변경 · 위치 이동 · 삭제 ---------- */
+let vmenuEl = null;
+function closeVMenu() {
+  if (!vmenuEl) return;
+  document.querySelectorAll('.vmore.open').forEach(b => b.classList.remove('open'));
+  vmenuEl.remove(); vmenuEl = null;
+}
+function openVMenu(btn) {
+  const same = vmenuEl && vmenuEl.dataset.k === btn.dataset.vm;
+  closeVMenu(); if (same) return;
+  const v = S.videos.find(x => x.key === btn.dataset.vm); if (!v) return;
+  const el = document.createElement('div');
+  el.className = 'vmenu'; el.dataset.k = v.key; el.setAttribute('role', 'menu');
+  el.innerHTML = `<button type="button" role="menuitem" data-a="rename">✎ 이름 변경</button><button type="button" role="menuitem" data-a="move">📂 위치 이동</button><button type="button" role="menuitem" class="danger" data-a="del">🗑 삭제</button>`;
+  document.body.appendChild(el);
+  const r = btn.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+  el.style.left = Math.max(6, Math.min(r.right - w, innerWidth - w - 6)) + 'px';
+  el.style.top = (r.bottom + 4 + h > innerHeight && r.top - h - 4 > 0 ? r.top - h - 4 : r.bottom + 4) + 'px';
+  btn.classList.add('open');
+  el.onclick = ev => {
+    const b = ev.target.closest('button[data-a]'); if (!b) return;
+    closeVMenu(); ({ rename: vmRename, move: vmMove, del: vmDelete })[b.dataset.a](v);
+  };
+  el.onkeydown = ev => {
+    const bs = [...el.querySelectorAll('button')], i = bs.indexOf(document.activeElement);
+    if (ev.key === 'ArrowDown') { ev.preventDefault(); bs[(i + 1) % bs.length].focus(); }
+    else if (ev.key === 'ArrowUp') { ev.preventDefault(); bs[(i - 1 + bs.length) % bs.length].focus(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); closeVMenu(); btn.focus(); }
+    else if (ev.key === 'Tab') closeVMenu();
+  };
+  vmenuEl = el; el.querySelector('button').focus();
+}
+document.addEventListener('mousedown', ev => { if (vmenuEl && !ev.target.closest('.vmenu') && !ev.target.closest('[data-vm]')) closeVMenu(); }, true);
+$('#side').addEventListener('scroll', closeVMenu);
+window.addEventListener('resize', closeVMenu);
+
+const vmBusy = () => { if (S.editing) { toast('다른 수정이 진행 중입니다. 저장 또는 취소를 먼저 해 주세요.'); return true; } return false; };
+/* 작업 뒤 목록을 새로 읽고, 보고 있던 영상이면 새 이름의 영상을 다시 엽니다 */
+async function vmAfter(v, newKey) {
+  const wasSel = S.selKey === v.key, ent = S.selEntry;
+  await loadAll();
+  if (wasSel && newKey && S.videos.some(x => x.key === newKey)) openVideo(newKey, ent);
+}
+
+function vmRename(v) {
+  if (vmBusy()) return;
+  const d = $('#vmdlg');
+  d.innerHTML = `<form method="dialog" class="bmform"><h3>✎ 영상 이름 변경</h3>
+    <label>영상 제목 <span class="hint">화면에 보이는 이름 (엑셀 B1 칸)</span><input id="vrT" value="${esc(v.title)}" autocomplete="off" maxlength="300"></label>
+    <label>시트 이름 <span class="hint">엑셀 아래쪽 탭 이름 · 31자까지, [ ] : * ? / \\ 는 쓸 수 없음</span><input id="vrN" value="${esc(v.sheet)}" autocomplete="off" maxlength="31"></label>
+    <div class="hint">위치: ${esc(v.wb)}<br>이름을 바꿔도 연결한 참고자료·즐겨찾기·아이콘은 그대로 이어지고, 바꾸기 전에 엑셀 파일을 자동 백업합니다.</div>
+    <div class="edbar"><span class="edmsg" id="vrM"></span><button class="btn sm" type="button" id="vrC">취소</button><button class="btn pri sm" type="button" id="vrS">이름 변경</button></div></form>`;
+  d.showModal(); $('#vrT').select();
+  $('#vrC').onclick = () => d.close();
+  const go = async () => {
+    const msg = $('#vrM'), btn = $('#vrS'), title = $('#vrT').value.trim(), name = $('#vrN').value.trim();
+    if (!title) { msg.textContent = '영상 제목을 입력해 주세요'; return; }
+    if (!name) { msg.textContent = '시트 이름을 입력해 주세요'; return; }
+    if (title === v.title && name === v.sheet) { msg.textContent = '바뀐 내용이 없습니다'; return; }
+    btn.disabled = true; msg.textContent = '저장 중…';
+    try {
+      const r = await api('/api/video/rename', { file: v.wb, sheet: v.sheet, name, title });
+      d.close(); toast('이름을 바꿨습니다.'); await vmAfter(v, r.key);
+    } catch (err) { msg.textContent = err.message; btn.disabled = false; }
+  };
+  $('#vrS').onclick = go;
+  d.onkeydown = ev => { if (ev.isComposing) return; if (ev.key === 'Enter' && ev.target.tagName === 'INPUT') { ev.preventDefault(); go(); } };
+}
+
+async function vmDelete(v) {
+  if (vmBusy()) return;
+  const n = v.entries.length, nb = BM().items.filter(b => b.v === v.key).length;
+  const nr = Object.values(S.refs.videos[v.key]?.refs || {}).reduce((a, l) => a + l.length, 0);
+  const extra = [nr ? `연결한 참고자료 ${nr}개` : '', nb ? `즐겨찾기 ${nb}개` : ''].filter(Boolean).join(', ');
+  const yes = await ask({
+    title: '영상 삭제', danger: true, ok: '삭제',
+    msg: `'${v.title}'\n\n엑셀 문서 '${v.wb}'에서 시트 '${v.sheet}'를 삭제합니다.\n타임라인 ${n}개${extra ? ', ' + extra : ''}가 함께 사라집니다.\n\n삭제하기 전에 엑셀 파일을 자동 백업합니다 (library/.backup 폴더, 최근 10개).\n화면에서는 되돌릴 수 없습니다.`,
+  });
+  if (!yes) return;
+  try {
+    const r = await api('/api/video/delete', { file: v.wb, sheet: v.sheet });
+    toast(`'${r.title || v.title}' 영상을 삭제했습니다.` + (r.refsWarning ? ' (연결 정보 정리는 종료할 때 마무리됩니다)' : ''), 5000);
+    await vmAfter(v, null);
+  } catch (err) { toast('삭제 실패: ' + err.message, 6000); }
+}
+
+/* 위치 이동: 옮길 엑셀 문서를 고르는 창 (즐겨찾기 폴더 이동창과 같은 방식) */
+function vmMove(v) {
+  if (vmBusy()) return;
+  const d = $('#vmpick');
+  const st = { sel: '', ctx: '', closed: new Set() };      // sel = 고른 엑셀 문서, ctx = 새 문서를 만들 폴더
+  d.innerHTML = `<div class="bmbox"><div class="bmh1"><b>📂 '${esc(v.title)}' 을(를) 옮길 엑셀 문서</b><button class="x" data-x title="닫기">✕</button></div>
+    <div class="bmsub">지금 위치: ${esc(v.wb)}</div>
+    <div class="bmtree" id="vpTree"></div>
+    <div class="hint">제목·주소·업로드일·재생 시간과 타임라인(시간·내용·키워드)이 새 시트로 옮겨지고, 연결한 참고자료·즐겨찾기·아이콘도 따라갑니다. 셀 서식과 그 밖의 칸은 옮겨지지 않습니다. 옮기기 전에 두 파일을 모두 자동 백업합니다.</div>
+    <div class="bmbtns"><button class="btn sm" type="button" id="vpNew">＋ 새 엑셀 문서</button><span class="edmsg" id="vpM"></span><span class="sp"></span><button class="btn" type="button" data-x>취소</button><button class="btn pri" type="button" id="vpOk" disabled>여기로 이동</button></div></div>`;
+  const tree = d.querySelector('#vpTree'), msg = d.querySelector('#vpM'), ok = d.querySelector('#vpOk');
+  const draw = () => {
+    const root = { f: {}, w: [] };
+    for (const f of S.lib.files) {
+      if (f.error) continue;
+      const parts = f.path.split('/'); let n = root;
+      for (const p of parts.slice(0, -1)) n = (n.f[p] ??= { f: {}, w: [] });
+      n.w.push({ name: parts.at(-1), path: f.path, cnt: f.videos.length });
+    }
+    let h = `<div class="bmf${st.ctx === '' && !st.sel ? ' on' : ''}" data-dir="" style="padding-left:4px"><span class="bmn">⭐ 라이브러리 (최상위)</span></div>`;
+    const walk = (n, prefix, depth) => {
+      for (const name of Object.keys(n.f).sort(cmp)) {
+        const p = prefix + name, open = !st.closed.has(p);
+        h += `<div class="bmf${st.ctx === p && !st.sel ? ' on' : ''}" data-dir="${esc(p)}" style="padding-left:${4 + depth * 16}px"><button type="button" class="bmt" data-t="${esc(p)}" tabindex="-1">${open ? '▾' : '▸'}</button><span class="bmn">${esc(iconOf('dir', p))} ${esc(name)}</span></div>`;
+        if (open) walk(n.f[name], p + '/', depth + 1);
+      }
+      for (const w of n.w.sort((a, b) => cmp(a.name, b.name))) {
+        const cur = w.path === v.wb;
+        h += `<div class="bmf${w.path === st.sel ? ' on' : ''}${cur ? ' dis' : ''}" data-file="${esc(w.path)}" style="padding-left:${4 + depth * 16 + 18}px" title="${cur ? '지금 이 영상이 있는 문서입니다' : esc(w.path)}"><span class="bmn">${esc(iconOf('file', w.path))} ${esc(w.name.replace(/\.xlsx$/i, ''))}</span><span class="bmc">${cur ? '현재 위치' : w.cnt + '개'}</span></div>`;
+      }
+    };
+    walk(root, '', 1);
+    tree.innerHTML = h;
+    ok.disabled = !st.sel;
+  };
+  tree.onclick = ev => {
+    const t = ev.target.closest('.bmt');
+    if (t) { st.closed.has(t.dataset.t) ? st.closed.delete(t.dataset.t) : st.closed.add(t.dataset.t); draw(); return; }
+    const f = ev.target.closest('[data-file]');
+    if (f) { if (f.classList.contains('dis')) return; st.sel = f.dataset.file; st.ctx = st.sel.includes('/') ? st.sel.slice(0, st.sel.lastIndexOf('/')) : ''; msg.textContent = ''; draw(); return; }
+    const dr = ev.target.closest('[data-dir]');
+    if (dr) { st.ctx = dr.dataset.dir; st.sel = ''; draw(); }
+  };
+  let busy = false;
+  const fin = () => { if (!busy && d.open) d.close(); };
+  d.querySelectorAll('[data-x]').forEach(b => b.onclick = fin);
+  d.oncancel = ev => { if (busy) ev.preventDefault(); };
+  d.querySelector('#vpNew').onclick = async () => {
+    const name = await ask({ title: '새 엑셀 문서', msg: '만들 위치: ' + (st.ctx || '라이브러리 (최상위)'), value: '새 문서', ok: '만들기' });
+    if (!name) return;
+    try {
+      const r = await api('/api/doc/create', { folder: st.ctx, name });
+      await loadAll(true); st.sel = r.path; msg.textContent = ''; draw();
+    } catch (err) { msg.textContent = err.message; }
+  };
+  ok.onclick = async () => {
+    if (!st.sel) return;
+    busy = true; ok.disabled = true; msg.textContent = '옮기는 중… (타임라인이 많으면 시간이 걸립니다)';
+    try {
+      const r = await api('/api/video/move', { file: v.wb, sheet: v.sheet, dest: st.sel });
+      busy = false; d.close();
+      toast(`'${v.title}' 영상을 '${st.sel}'(으)로 옮겼습니다.` + (r.renamed ? ` 같은 이름의 시트가 있어 '${r.name}'(으)로 저장했습니다.` : '') + (r.refsWarning ? ' (연결 정보 정리는 종료할 때 마무리됩니다)' : ''), 7000);
+      await vmAfter(v, r.key);
+    } catch (err) { busy = false; msg.textContent = err.message; ok.disabled = !st.sel; }
+  };
+  draw(); d.showModal();
+}
+
 /* ---------- 상단 버튼 / 이벤트 ---------- */
 $('#side').addEventListener('click', ev => {
+  const vmb = ev.target.closest('[data-vm]');
+  if (vmb) { ev.preventDefault(); ev.stopPropagation(); return openVMenu(vmb); }
   if (ev.target.closest('[data-import]')) { ev.preventDefault(); ev.stopPropagation(); return openImport(); }
   const nd = ev.target.closest('[data-newdoc]');
   if (nd) { ev.preventDefault(); ev.stopPropagation(); return openNewDoc(nd.dataset.newdoc); }
