@@ -1,7 +1,7 @@
 'use strict';
 /* 영상 타임라인 매니저 - 화면 로직 (서버 app.py 의 /api/* 와 통신) */
 
-const WEB_VERSION = '1.0.0 (2026-11-19)';   // 화면(웹 파일) 버전 — app.py의 APP_VERSION과 같아야 합니다
+const WEB_VERSION = '1.0.1 (2026-11-20)';   // 화면(웹 파일) 버전 — app.py의 APP_VERSION과 같아야 합니다
 const S = {
   lib: null, videos: [], errors: [], refs: { version: 1, videos: {} },
   selKey: null, selEntry: null, query: '', vq: '', zoom: null, only: false, onlyHit: true, scope: { text: true, kw: true, ref: true },
@@ -921,7 +921,7 @@ function startKwEdit(box, v, e) {
     box.innerHTML = list.map((k, i) => `<span class="kw kwed"${kwStyle(k)}>${esc(k)}<button class="kwx" data-i="${i}" title="삭제">×</button></span>`).join('') +
       `<input class="kwin" placeholder="키워드 입력 후 Enter (쉼표로 여러 개)" autocomplete="off">` +
       `<button class="btn sm" data-c>취소</button><button class="btn pri sm" data-s>엑셀에 저장</button><span class="edmsg"></span>`;
-    box.querySelectorAll('.kwx').forEach(b => b.onclick = () => { list.splice(+b.dataset.i, 1); draw(); box.querySelector('.kwin').focus(); });
+    box.querySelectorAll('.kwx').forEach(b => b.onclick = ev => { ev.stopPropagation(); list.splice(+b.dataset.i, 1); draw(); box.querySelector('.kwin').focus(); });
     const inp = box.querySelector('.kwin'), msg = box.querySelector('.edmsg'), save = box.querySelector('[data-s]');
     const add = () => {
       for (const k of inp.value.split(/[,，]/).map(x => x.trim()).filter(Boolean))
@@ -1384,6 +1384,7 @@ $('#main').addEventListener('click', ev => {
   const st = ev.target.closest('.row [data-star]');
   if (st) { const v = curVideo(), e = v && v.entries.find(x => x.key === st.closest('.row').dataset.k); return e && bmOpen(bmInfo(v, e)); }
   const kw = ev.target.closest('.kw');
+  if (kw && kw.classList.contains('kwed')) return;      // 키워드 편집 중인 칩(×·칩 자체)은 팝업을 열지 않음
   if (kw) {
     const row = kw.closest('.row');
     return openKwPop(kw.dataset.kw, kw, { vk: S.selKey, ek: row ? row.dataset.k : S.selEntry });

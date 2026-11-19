@@ -1,0 +1,10 @@
+# 개인 자료 / 사용자 설정 (올리지 마세요)
+library/*
+!library/.gitkeep
+!library/Template.xlsx
+config.json
+*.bak
+*.backup
+~$*.xlsx
+__pycache__/
+*.pyc

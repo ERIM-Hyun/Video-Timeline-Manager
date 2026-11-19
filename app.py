@@ -35,7 +35,7 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 REFS_NAME = "timeline-refs.json"
 REMOVED_NAME = "timeline-refs.removed.json"   # 종료 때 정리된 항목의 보관 파일(복구용)
 FIRST_PORT = 8765
-APP_VERSION = "1.0.0 (2026-11-19)"
+APP_VERSION = "1.0.1 (2026-11-20)"
 
 # 새 버전 알림용 GitHub 저장소 ("소유자/저장소"). 배포하는 사람이 여기에 적습니다. 비워 두면 알림 기능이 꺼집니다.
 # config.json의 "update_repo"로도 지정할 수 있습니다(그쪽이 우선).
