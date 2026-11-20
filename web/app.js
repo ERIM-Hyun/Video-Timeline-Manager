@@ -1,7 +1,7 @@
 'use strict';
 /* 영상 타임라인 매니저 - 화면 로직 (서버 app.py 의 /api/* 와 통신) */
 
-const WEB_VERSION = '1.1.0 (2026-11-20)';   // 화면(웹 파일) 버전 — app.py의 APP_VERSION과 같아야 합니다
+const WEB_VERSION = '1.2.0 (2026-11-20)';   // 화면(웹 파일) 버전 — app.py의 APP_VERSION과 같아야 합니다
 const S = {
   lib: null, videos: [], errors: [], refs: { version: 1, videos: {} },
   selKey: null, selEntry: null, query: '', vq: '', zoom: null, only: false, onlyHit: true, scope: { text: true, kw: true, ref: true },
@@ -320,6 +320,15 @@ function updateSummary() {
   $('#gsum').textContent = (hv.length ? `영상 ${hv.length}개 · ${stamps}곳` : '결과 없음' + scopeNote()) + (nb ? ` · ★ ${nb}개` : '');
 }
 
+/* ---------- 경로 숨기기 (방송·화면 공유용): 화면에 나오는 폴더·파일의 절대 경로를 가림. 이 브라우저에 저장 ---------- */
+const HIDE_KEY = 'tlm-hide-paths', HIDDEN_PATH = '●●●●●● (경로 숨김)';
+const hidePaths = () => { try { return localStorage.getItem(HIDE_KEY) === '1'; } catch { return false; } };
+const showPath = p => hidePaths() ? HIDDEN_PATH : (p || '');
+function applyPathHide() {
+  const el = $('#libpath'); if (!el) return;
+  el.textContent = showPath(S.lib?.root); el.title = hidePaths() ? '경로 숨기기 사용 중' : (S.lib?.root || '');
+}
+
 /* ---------- 불러오기 ---------- */
 async function loadAll(auto) {
   const [lib, refs] = await Promise.all([api('/api/library'), api('/api/refs')]);
@@ -334,7 +343,7 @@ async function loadAll(auto) {
   if (stale && !S.staleToasted) { S.staleToasted = true; toast(`서버가 이전 버전(v${lib.version || '?'})으로 실행 중입니다. 서버를 종료한 뒤 run.bat을 다시 실행해 주세요.`, 9000); }
   $('#stalebar').hidden = !stale;
   if (stale) $('#stalebar').textContent = `⚠ 서버가 이전 버전(v${lib.version || '?'})으로 실행 중입니다. 상단 [종료]를 누르거나 검은 창을 닫은 뒤 run.bat을 다시 실행해 주세요.`;
-  $('#libpath').textContent = lib.root; $('#libpath').title = lib.root;
+  applyPathHide();
   if (!S.updChecked) { S.updChecked = true; checkUpdate(); }
   buildKwIndex(); computeHits(); computeOrphans(); updateDiagBadge(); $('#bmCount').textContent = bmCountText(); updateSummary(); renderSide(); renderKwBrowse();
   if (S.selKey && !curVideo()) { S.selKey = null; S.selEntry = null; }
@@ -440,7 +449,7 @@ function renderSide() {
 /* ---------- 본문 ---------- */
 function renderEmpty() {
   $('#main').innerHTML = `<div class="empty"><h2>왼쪽에서 영상을 선택하세요</h2>
-    ${S.videos.length ? '' : `<p>아직 읽을 영상이 없습니다. 아래 폴더 안에 엑셀(.xlsx) 파일을 넣어 주세요.<br><code>${esc(S.lib?.root || '')}</code></p>`}
+    ${S.videos.length ? '' : `<p>아직 읽을 영상이 없습니다. 아래 폴더 안에 엑셀(.xlsx) 파일을 넣어 주세요.<br><code>${esc(showPath(S.lib?.root))}</code></p>`}
     ${S.skipped ? `<p>템플릿으로 보고 제외한 시트가 ${S.skipped}개 있습니다.<br>시트 이름이 <b>'템플릿'이나 'Template'</b>이면 내용이 있어도 항상 제외됩니다. 그 밖에 이름에 '템플릿'이 들어간 시트는 <b>영상 제목(B1)이나 주소(B2)를 입력</b>하면 영상으로 표시됩니다.</p>` : ''}
     <p>엑셀 한 파일은 폴더처럼, 시트 하나는 영상 하나로 인식합니다.<br>
     B1 제목 · B2 영상 주소 · B3 업로드 일자, 4행 머리글(타임라인 | 내용 | 키워드) 아래로 시간 · 내용 · 키워드(오른쪽으로 계속)를 입력</p></div>`;
@@ -727,7 +736,7 @@ function updateDetail() {
     <div class="rtitle">${PLACE_ICON} 참고자료</div>
     <div class="chips">
       ${refs.map((r, i) => `<span class="chip ${r.missing ? 'miss' : ''}">
-        <button class="o" data-open="${i}" title="${esc(r.path)}">${PLACE_ICON}${esc(r.label)}${r.missing ? ' ⚠' : ''}</button>
+        <button class="o" data-open="${i}" title="${esc(showPath(r.path))}">${PLACE_ICON}${esc(r.label)}${r.missing ? ' ⚠' : ''}</button>
         <button class="x" data-ren="${i}" title="이름 변경">✎</button><button class="x" data-del="${i}" title="연결 해제">×</button></span>`).join('')}
       <button class="btn sm" id="addref">＋ 파일 연결</button>
     </div>`;
@@ -1107,7 +1116,7 @@ async function addRefs() {
 }
 async function renameRef(i) {
   const v = curVideo(), e = curEntry(), r = entryRefs(v, e)[i]; if (!r) return;
-  const label = await ask({ title: '참고자료 이름 변경', msg: r.path, value: r.label });
+  const label = await ask({ title: '참고자료 이름 변경', msg: showPath(r.path), value: r.label });
   if (label === null) return;
   r.label = label; await persist(); computeHits(); renderSide(); updateAll();
 }
@@ -1125,7 +1134,7 @@ async function openViewer(i) {
   const v = curVideo(), e = curEntry(), r = entryRefs(v, e)[i]; if (!r) return;
   viewerCtx = { v, e, i, r };
   const body = $('#vwb');
-  $('#vwt').textContent = r.label; $('#vwp').textContent = r.path;
+  $('#vwt').textContent = r.label; $('#vwp').textContent = showPath(r.path);
   body.innerHTML = '<div class="hint">불러오는 중…</div>';
   $('#vwOpen').style.display = $('#vwReveal').style.display = '';
   $('#viewer').showModal();
@@ -1569,7 +1578,7 @@ $('#btnLib').onclick = async () => {
   try {
     const r = await api('/api/library/pick', {});
     let p;
-    if (r.error) p = await ask({ title: '라이브러리 폴더 경로', msg: '엑셀 파일들이 들어 있는 폴더 경로를 입력해 주세요.', value: S.lib?.root || '' });
+    if (r.error) p = await ask({ title: '라이브러리 폴더 경로', msg: '엑셀 파일들이 들어 있는 폴더 경로를 입력해 주세요.', value: hidePaths() ? '' : (S.lib?.root || '') });
     else p = r.paths?.[0];
     if (!p) return;
     await api('/api/library/set', { path: p });
@@ -1878,6 +1887,9 @@ function openSettings() {
           <label class="stsl">배경 색조 <input type="range" id="stT" min="0" max="40" value="${t.tint}"><span id="stTv">${Math.round(t.tint)}</span></label>
           <div class="hint">선명도를 낮추면 차분한 회색 톤이 되고, 배경 색조는 배경·테두리에 색을 얼마나 섞을지 정합니다.</div></div>
         <div class="stsec stprev"><span class="hint">미리보기</span><button class="btn pri sm" type="button">강조 버튼</button><span class="kw">키워드</span><span class="stsel">선택된 항목</span></div>
+        <div class="stsec"><div class="stlb">경로 숨기기 <span class="hint">방송·화면 공유용</span></div>
+          <label class="chk"><input type="checkbox" id="stHide"${hidePaths() ? ' checked' : ''}> 화면에 나오는 폴더·파일 경로 가리기</label>
+          <div class="hint">프로그램 화면의 폴더·참고자료 경로만 가립니다. 탐색기나 파일 선택창은 가려지지 않습니다. 이 브라우저에 저장됩니다.</div></div>
         <div class="stsec" id="stUpd"><div class="stlb">새 버전 알림</div><div class="hint">불러오는 중…</div></div>
         <div class="edbar"><span class="edmsg hint" style="color:var(--sub)">이 브라우저에 저장됩니다</span><button class="btn sm" id="stReset" type="button">기본값으로</button><button class="btn pri sm" id="stOk" type="button">닫기</button></div>
       </div></div>`;
@@ -1888,7 +1900,7 @@ function openSettings() {
     d.querySelectorAll('.stp').forEach((b, i) => b.classList.toggle('on', presetOn(T.PRESETS[i], t)));
   };
   const updHtml = u => !u ? '<div class="hint">확인하지 못했습니다.</div>' : !u.configured ? '<div class="hint">배포하는 사람이 업데이트 주소를 설정하지 않아 알림 기능이 꺼져 있습니다.</div>'
-    : `<label class="chk"><input type="checkbox" id="stUpdOn"${u.enabled ? ' checked' : ''}> 새 버전이 있으면 알려 주기 (하루 한 번 GitHub 확인)</label>
+    : `<label class="chk"><input type="checkbox" id="stUpdOn"${u.enabled ? ' checked' : ''}> 새 버전이 있으면 알려 주기 (켜면 하루 한 번 GitHub에 접속하며, 이때 IP가 GitHub에 전달됩니다)</label>
        <div class="hint">현재 v${esc(u.current)}${u.latest ? ` · 최신 ${esc(u.latest)}${u.newer ? ' — <a href="' + esc(u.url) + '" target="_blank" rel="noopener">받으러 가기 ↗</a>' : ' (최신입니다)'}` : ''}${u.error ? ' · ' + esc(u.error) : ''}. 알림만 하며 파일은 자동으로 바꾸지 않습니다. 켜면 확인할 때 IP 주소가 GitHub에 전달됩니다.</div>`;
   const loadUpd = () => api('/api/update').then(u => { S.upd = u; const el = $('#stUpd'); if (el) el.innerHTML = '<div class="stlb">새 버전 알림</div>' + updHtml(u); }).catch(() => {});
   draw(); loadUpd();
@@ -1897,6 +1909,10 @@ function openSettings() {
     T.set({ hue: +$('#stH').value, sat: +$('#stS').value, tint: +$('#stT').value }); sync();
   };
   d.onclick = ev => {
+    if (ev.target.closest('#stHide')) {
+      try { localStorage.setItem(HIDE_KEY, ev.target.closest('#stHide').checked ? '1' : '0'); } catch { /* 무시 */ }
+      applyPathHide(); if (!curVideo()) renderEmpty(); else updateAll(); return;
+    }
     if (ev.target.closest('#stUpdOn')) { const on = ev.target.closest('#stUpdOn').checked; api('/api/update/config', { enabled: on }).then(u => { S.upd = u; const el = $('#stUpd'); if (el) el.innerHTML = '<div class="stlb">새 버전 알림</div>' + updHtml(u); if (on) checkUpdate(); else $('#updbar').hidden = true; }).catch(e => toast(e.message)); return; }
     if (ev.target.closest('#stX, #stOk')) return d.close();
     if (ev.target.closest('#stReset')) { T.reset(); draw(); return loadUpd(); }
@@ -2037,7 +2053,7 @@ function diagRelink() {
     <div class="rlall"><button class="btn sm pri" data-a="all"${nSug ? '' : ' disabled'}>추천대로 모두 연결 (${nSug})</button></div>${rows}`;
 }
 function diagSheets() {
-  return `<div class="hint">라이브러리 폴더: ${esc(S.lib.root)}</div>` + (S.lib.files.map(f => `<div class="df">📒 ${esc(f.path)}</div>` +
+  return `<div class="hint">라이브러리 폴더: ${esc(showPath(S.lib.root))}</div>` + (S.lib.files.map(f => `<div class="df">📒 ${esc(f.path)}</div>` +
     (f.error ? `<div class="ds err"><span class="st">⚠</span><span class="nt">${esc(f.error)}</span></div>` : '') +
     (f.sheets || []).map(sh => `<div class="ds ${sh.status}"><span class="st">${sh.status === 'ok' ? '✅' : '➖'}</span><span class="nm">${esc(sh.name)}</span><span class="nt">${esc(sh.note)}</span></div>`).join('')).join('')
     || '<div class="hint">읽은 엑셀 파일이 없습니다. 라이브러리 폴더에 .xlsx 파일이 있는지 확인해 주세요.</div>');
@@ -2058,7 +2074,7 @@ function diagCheck() {
     [noUrl.length ? item('🔗', `주소(B2) 없음 ${noUrl.length}개`, '플레이어를 표시할 수 없습니다: ' + noUrl.slice(0, 5).map(v => v.title).join(', ') + (noUrl.length > 5 ? ' 외' : '')) : '',
       noDate.length ? item('📅', `업로드일(B3) 없음 ${noDate.length}개`, '날짜 정렬에서 맨 뒤로 갑니다: ' + noDate.slice(0, 5).map(v => v.title).join(', ') + (noDate.length > 5 ? ' 외' : '')) : '',
       badRows ? item('⏱', `시간 형식 오류 ${badRows}행`, '시트 인식 탭에서 해당 시트를 확인해 주세요', 'err') : ''].join('') || '<div class="hint">없음</div>');
-  h += sec('연결된 참고자료 파일을 찾을 수 없음', missRefs.length ? missRefs.slice(0, 50).map(x => item('📎', x.r.name || x.r.path, `${x.v.title} · ${x.r.path}`, 'err')).join('') + (missRefs.length > 50 ? `<div class="hint">…외 ${missRefs.length - 50}개</div>` : '') : '<div class="hint">없음</div>');
+  h += sec('연결된 참고자료 파일을 찾을 수 없음', missRefs.length ? missRefs.slice(0, 50).map(x => item('📎', x.r.name || showPath(x.r.path), `${x.v.title} · ${showPath(x.r.path)}`, 'err')).join('') + (missRefs.length > 50 ? `<div class="hint">…외 ${missRefs.length - 50}개</div>` : '') : '<div class="hint">없음</div>');
   return h;
 }
 function renderDiag() {

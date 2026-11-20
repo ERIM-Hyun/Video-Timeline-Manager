@@ -36,7 +36,7 @@ CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 REFS_NAME = "timeline-refs.json"
 REMOVED_NAME = "timeline-refs.removed.json"   # 종료 때 정리된 항목의 보관 파일(복구용)
 FIRST_PORT = 8765
-APP_VERSION = "1.1.0 (2026-11-20)"
+APP_VERSION = "1.2.0 (2026-11-20)"
 
 # 새 버전 알림용 GitHub 저장소 ("소유자/저장소"). 배포하는 사람이 여기에 적습니다. 비워 두면 알림 기능이 꺼집니다.
 # config.json의 "update_repo"로도 지정할 수 있습니다(그쪽이 우선).
@@ -44,7 +44,7 @@ UPDATE_REPO = "ERIM-Hyun/Video-Timeline-Manager"
 
 DEFAULT_CONFIG = {
     "library": os.path.join(APP_DIR, "library"),
-    "update_check": True,    # 새 버전 알림 확인 (아래 UPDATE_REPO가 비어 있으면 동작하지 않음)
+    "update_check": False,   # 새 버전 알림 확인. 기본은 꺼짐(설정에서 켜면 하루 한 번 GitHub에 접속). UPDATE_REPO가 비어 있으면 동작하지 않음
     "auto_exit_minutes": 3,  # 브라우저가 닫힌 뒤 서버를 자동 종료할 때까지의 시간(분). 0이면 자동 종료 안 함
 }
 
@@ -950,7 +950,7 @@ def check_update(force=False):
     cfg = load_config()
     repo = str(cfg.get("update_repo") or UPDATE_REPO or "").strip()
     cur = APP_VERSION
-    res = {"enabled": bool(cfg.get("update_check", True)) and bool(repo), "configured": bool(repo), "current": cur, "newer": False}
+    res = {"enabled": bool(cfg.get("update_check", False)) and bool(repo), "configured": bool(repo), "current": cur, "newer": False}
     if not res["enabled"]:
         return res
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo):
